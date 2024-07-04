@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+
+<head>
+    <title>Big Two Poker Game</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.5.0/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+    <style>
+        .card {
+            width: 70px;
+            height: 100px;
+            margin: 5px;
+            cursor: pointer;
+            border: 2px solid transparent;
+        }
+
+        .card.selected {
+            border-color: red;
+        }
+
+        .turn-bubble {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 25px;
+            display: none;
+        }
+
+        #your-hand {
+            display: flex;
+            flex-wrap: wrap;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="join-form">
+        <input type="text" id="player-name" placeholder="Enter your name">
+        <button onclick="joinGame()">Join Game</button>
+    </div>
+
+    <div id="game-board" style="display: none;">
+        <h2>Big Two Poker Game</h2>
+        <div id="players"></div>
+        <div id="current-play"></div>
+        <h3>Your Hand:</h3>
+        <div id="your-hand"></div>
+        <button onclick="playSelectedCards()">Play Selected Cards</button>
+        <button onclick="passTurn()">Pass</button>
+        <button onclick="sortCardsBySuit()">Sort by Suit</button>
+        <button onclick="sortCardsByRank()">Sort by Rank</button>
+        <div id="turn-bubble" class="turn-bubble">It's your turn!</div>
+    </div>
+
+    <script th:inline="javascript">
+        var stompClient = null;
+        var playerId = 'player_' + Math.random().toString(36).substr(2, 9);
+        var selectedCards = [];
+
+        function connectWebSocket() {
+            var socket = new SockJS('/big-two-websocket');
+            stompClient = Stomp.over(socket);
+            stompClient.connect({}, function (frame) {
+                console.log('Connected: ' + frame);
+                stompClient.subscribe('/topic/game-state', function (gameState) {
+                    updateGameState(JSON.parse(gameState.body));
+                });
+            });
+        }
+
+        function joinGame() {
+            var playerName = document.getElementById('player-name').value;
+            stompClient.send("/app/join", {}, JSON.stringify({ 'playerId': playerId, 'playerName': playerName }));
+            document.getElementById('join-form').style.display = 'none';
+            document.getElementById('game-board').style.display = 'block';
+        }
+
+        function updateGameState(gameState) {
+            var playersDiv = document.getElementById('players');
+            playersDiv.innerHTML = '<h3>Players:</h3>';
+            gameState.players.forEach(function (player, index) {
+                playersDiv.innerHTML += '<p>' + player.name + ' - Cards: ' + player.hand.length +
+                    (index === gameState.currentPlayerIndex ? ' (Current Turn)' : '') + '</p>';
+            });
+
+            var currentPlayDiv = document.getElementById('current-play');
+            currentPlayDiv.innerHTML = '<h3>Current Play:</h3>';
+            gameState.currentPlay.forEach(function (card) {
+                currentPlayDiv.innerHTML += `<img src="/images/${card.cardName}.png" class="card" alt="${card.cardName}"> `;
+            });
+
+            var yourHandDiv = document.getElementById('your-hand');
+            yourHandDiv.innerHTML = '';
+            var yourPlayer = gameState.players.find(function (player) { return player.id === playerId; });
+            if (yourPlayer) {
+                // Sort the hand based on suit and rank
+                // yourPlayer.hand.sort(function (a, b) {
+                //     const suitOrder = { 'S': 0, 'H': 1, 'C': 2, 'D': 3 };
+                //     const rankOrder = { '3': 0, '4': 1, '5': 2, '6': 3, '7': 4, '8': 5, '9': 6, 'T': 7, 'J': 8, 'Q': 9, 'K': 10, 'A': 11, '2': 12 };
+                //     if (suitOrder[a.suit] !== suitOrder[b.suit]) {
+                //         return suitOrder[a.suit] - suitOrder[b.suit];
+                //     }
+                //     return rankOrder[a.rank] - rankOrder[b.rank];
+                // });
+
+                yourPlayer.hand.forEach(function (card) {
+                    var cardImg = document.createElement('img');
+                //     const rankMapping = {
+                //         'THREE': '3',
+                //         'FOUR': '4',
+                //         'FIVE': '5',
+                //         'SIX': '6',
+                //         'SEVEN': '7',
+                //         'EIGHT': '8',
+                //         'NINE': '9',
+                //         'TEN': 'T',
+                //         'JACK': 'J',
+                //         'QUEEN': 'Q',
+                //         'KING': 'K',
+                //         'ACE': 'A',
+                //         'TWO': '2'
+                //     };
+                    cardImg.src = `/images/${card.cardName}.png`;
+                    cardImg.alt = card.cardName;
+                    cardImg.className = 'card';
+                    cardImg.onclick = function () { toggleCardSelection(card, cardImg); };
+                    yourHandDiv.appendChild(cardImg);
+                });
+            }
+
+            var turnBubble = document.getElementById('turn-bubble');
+            if (gameState.players[gameState.currentPlayerIndex].id === playerId) {
+                turnBubble.style.display = 'block';
+
+                // Check if all other players have passed
+                if (gameState.consecutivePasses === gameState.players.length - 1) {
+                    // Allow the current player to play any combination
+                    gameState.currentPlay = null; // Reset the current play
+                }
+
+            } else {
+                turnBubble.style.display = 'none';
+            }
+
+            if (gameState.gameState === "Won" && gameState.winnerId === playerId) {
+                alert("You won the game!");
+            } else if (gameState.gameState === "Won") {
+                var winner = gameState.players.find(player => player.id === gameState.winnerId);
+                alert("Winner is: " + winner.name);
+            }
+        }
+
+        function toggleCardSelection(card, cardElement) {
+            var index = selectedCards.findIndex(c => c.suit === card.suit && c.rank === card.rank);
+            if (index > -1) {
+                selectedCards.splice(index, 1);
+                cardElement.classList.remove('selected');
+            } else if (selectedCards.length < 5) {
+                selectedCards.push(card);
+                cardElement.classList.add('selected');
+            }
+        }
+
+        function playSelectedCards() {
+            if (selectedCards.length > 0) {
+                stompClient.send("/app/play", {}, JSON.stringify({ 'playerId': playerId, 'cards': selectedCards }));
+                selectedCards = [];
+                document.querySelectorAll('#your-hand .card').forEach(card => card.classList.remove('selected'));
+            }
+        }
+
+        function passTurn() {
+            stompClient.send("/app/pass", {}, JSON.stringify({ 'playerId': playerId }));
+        }
+
+        function renderPlayerHand() {
+            var yourHandDiv = document.getElementById('your-hand');
+            yourHandDiv.innerHTML = '';
+            document.querySelectorAll('#your-hand .card').forEach(function (card) {
+                var cardImg = document.createElement('img');
+                cardImg.src = `/images/${card.cardName}.png`;
+                cardImg.alt = card.cardName;
+                cardImg.className = 'card';
+                cardImg.onclick = function () { toggleCardSelection(card, cardImg); };
+                yourHandDiv.appendChild(cardImg);
+            });
+        }
+
+        function sortCardsBySuit() {
+            stompClient.send("/app/sort-by-suit", {}, JSON.stringify({ 'playerId': playerId }));
+        }
+
+        function sortCardsByRank() {
+            stompClient.send("/app/sort-by-rank", {}, JSON.stringify({ 'playerId': playerId }));
+
+        }
+
+
+        connectWebSocket();  
+    </script>
+</body>
+
+</html>
